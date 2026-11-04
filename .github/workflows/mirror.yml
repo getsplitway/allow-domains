@@ -1,0 +1,58 @@
+name: Зеркало itdoginfo
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Скачать изменения itdoginfo
+        run: |
+          git remote add upstream https://github.com/itdoginfo/allow-domains.git
+          git fetch --quiet upstream main
+
+      - name: Проверить списки
+        run: |
+          rejected=0
+          for path in $(git ls-tree -r --name-only HEAD -- Russia Categories Services Subnets | grep '\.lst$'); do
+            current=$(git show "HEAD:$path" | grep -c . || true)
+            if ! git cat-file -e "upstream/main:$path" 2>/dev/null; then
+              echo "::error::в itdoginfo пропал $path"
+              rejected=1
+              continue
+            fi
+            incoming=$(git show "upstream/main:$path" | grep -c . || true)
+            if [ "$incoming" -eq 0 ] || [ $((incoming * 2)) -lt "$current" ]; then
+              echo "::error::$path сократился с $current до $incoming строк"
+              rejected=1
+            fi
+          done
+          if [ "$rejected" -ne 0 ]; then
+            echo "Изменения не приняты: списки в itdoginfo пропали или сильно урезаны" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Принять изменения
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Новых изменений нет"
+            exit 0
+          fi
+          git merge --no-edit -m "Подтянул изменения itdoginfo" upstream/main
+          git push origin HEAD:main
